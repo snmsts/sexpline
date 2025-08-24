@@ -1,0 +1,140 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp(ql:quickload '(:sexpline) :silent t))
+
+(defpackage :ros.script.lq.3964598700
+  (:use :cl))
+(in-package :ros.script.lq.3964598700)
+
+(defun parse-args (args)
+  "Parse command line arguments into options, filter, and files"
+  (loop with options
+        with filter
+        with files
+        with options-over
+        with evals
+        with i = 0
+        while (< i (length args))
+        for arg = (nth i args)
+        do (if (not options-over)
+               (cond ((string= arg "--version")
+                      (format t "lq ~A~%" (asdf/component:component-version (asdf:find-system :sexpline)))
+                      (uiop:quit 0))
+                     ((string= arg "--help")
+                      (format t "Usage: lq [options] <filter> [file...]~%")
+                      (format t "Options:~%")
+                      (format t "  -f, --from-file     Read filter from file~%")
+                      (format t "  -l, --load          Load Lisp file~%")
+                      (format t "  -e, --eval          Evaluate expression~%")
+                      (format t "  -r, --raw-output    Output raw strings, not encoded~%")
+                      (format t "  -s, --slurp         Read all inputs into list~%")
+                      (format t "  -n, --null-input    Use null as input~%")
+                      (format t "  -c, --compact       Compact output~%")
+                      (format t "      --version       Show version~%")
+                      (format t "      --help          Show this help~%")
+                      (uiop:quit 0))
+                     ((or (string= arg "-f") (string= arg "--from-file"))
+                      (incf i)
+                      (if (< i (length args))
+                          (setf filter (uiop:read-file-string (nth i args)))
+                          (progn
+                            (format *error-output* "Error: --from-file requires filename~%")
+                            (uiop:quit 1))))
+                     ((or (string= arg "-l") (string= arg "--load"))
+                      (incf i)
+                      (if (< i (length args))
+                          (push (cons :load (nth i args)) evals)
+                          (progn
+                            (format *error-output* "Error: --load requires filename~%")
+                            (uiop:quit 1))))
+                     ((or (string= arg "-e") (string= arg "--eval"))
+                      (incf i)
+                      (if (< i (length args))
+                          (push (cons :eval (nth i args)) evals)
+                          (progn
+                            (format *error-output* "Error: --eval requires expression~%")
+                            (uiop:quit 1))))
+                     ((or (string= arg "-r") (string= arg "--raw-output"))
+                      (pushnew :raw-output options))
+                     ((or (string= arg "-s") (string= arg "--slurp"))
+                      (pushnew :slurp options))
+                     ((or (string= arg "-n") (string= arg "--null-input"))
+                      (pushnew :null-input options))
+                     ((or (string= arg "-c") (string= arg "--compact"))
+                      (pushnew :compact options))
+                     ((string= arg "--")
+                      (setf options-over t))
+                     ((char= (char arg 0) #\-)
+                      (format *error-output* "Unknown option: ~A~%" arg)
+                      (uiop:quit 1))
+                     ((null filter)
+                      (setf filter arg
+                            options-over t)))
+               (if filter
+                   (push arg files)
+                   (setf filter arg)))
+           (incf i)
+        finally (return (values (nreverse options) filter (nreverse files) (nreverse evals)))))
+
+(defun process-data (proc data options)
+  "Process single data item with given processor and options"
+  (let ((results (ignore-errors (multiple-value-list (funcall proc data)))))
+    (when results
+      (if (member :raw-output options)
+          (loop for result in results
+                do (format t "~A~%" result))
+          (loop for result in results
+                do (sexpl:out result))))))
+
+(defun main (&rest args)
+  (multiple-value-bind (options filter files evals) (parse-args args)
+    (unless filter
+      (format *error-output* "Error: filter expression required~%")
+      (uiop:quit 1))
+    
+    ;; Process --load and --eval in order
+    (dolist (item evals)
+      (handler-case
+          (let ((*package* (find-package :cl-user)))
+            (case (car item)
+              (:load (load (cdr item)))
+              (:eval (eval (read-from-string (cdr item))))))
+        (error (e)
+          (format *error-output* (case (car item)
+                                   (:load "Error loading file ~A: ~A~%")
+                                   (:eval "Error evaluating expression ~A: ~A~%"))
+                  (cdr item) e)
+          (uiop:quit 1))))
+    
+    (let* ((*package* (find-package :cl-user))
+           (proc (eval (read-from-string (format nil "(lambda (x)~A)" filter))))
+           (map (lambda (proc)
+                  (if files
+                      (loop for file in files
+                            do (handler-case
+                                   (with-open-file (stream file :direction :input)
+                                     (loop for data = (sexpl:in :stream stream)
+                                           while data
+                                           do (funcall proc data)))
+                                 (error (e)
+                                   (format *error-output* "Error processing file ~A: ~A~%" file e))))
+                      (handler-case
+                          (loop for data = (sexpl:in)
+                                while data
+                                do (funcall proc data))
+                        #+sbcl
+                        (sb-sys:interactive-interrupt () (return-from main)))))))
+      (cond
+        ((member :null-input options)
+         (process-data proc nil options))
+        ((member :slurp options)
+         (let ((all-data '()))
+           (funcall map (lambda (data) (push data all-data)))
+           (process-data proc (nreverse all-data) options)))
+        (t (funcall map (lambda (data) (process-data proc data options))))))))
+;;; vim: set ft=lisp lisp:

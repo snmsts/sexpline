@@ -1,4 +1,5 @@
 (defsystem "sexpline"
+  :version "1.0.0"
   :description "S-expression line encoding/decoding library inspired by JSONLines"
   :author "SANO Masatoshi"
   :license "MIT"

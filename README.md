@@ -1,186 +1,217 @@
-# Sexpline
+# lq - S-expression processor
 
-A Common Lisp library for encoding and decoding S-expressions as single-line strings, inspired by [JSONLines](https://jsonlines.org/).
-
-## Overview
-
-Sexpline allows you to encode S-expressions containing newlines into a single-line format that can be safely transmitted over text protocols, stored in line-based formats, or processed by stream-oriented tools. It uses the ASCII Record Separator character (\\x1E) as an escape character to preserve newlines while maintaining readability.
-
-## Features
-
-- **Single-line encoding**: Convert any S-expression to a single-line string format
-- **Perfect round-trip**: Decode preserves the exact original S-expression
-- **Stream I/O**: Read and write S-expressions from/to streams with robust error handling
-- **Flexible error handling**: Skip invalid lines, return custom error values, or signal errors
-- **SIGPIPE protection**: Graceful handling of broken pipes in streaming scenarios
-- **Multiple Lisp support**: Tested and confirmed on SBCL, CCL, and ECL
+`lq` is a command-line tool for processing S-expressions, inspired by [jq](https://jqlang.org/) but designed for Common Lisp data. It uses the [sexpline format](FORMAT.md) for line-based S-expression processing.
 
 ## Installation
 
-```lisp
-;; Load the system
-(asdf:load-system :sexpline)
+```bash
+# Install both lq tool and sexpline library
+ros install snmsts/sexpline
 
-;; Or with Quicklisp (once published)
-(ql:quickload :sexpline)
 ```
 
 ## Quick Start
 
-```lisp
-(use-package :sexpline)
+```bash
+# Basic filtering
+echo '(:name "Alice" :age 30)' | lq "(getf x :name)"
 
-;; Basic encoding/decoding
-(encode `(hello ,(format nil "world~%with newlines") :test 123))
-;; => "(HELLO \"world\x1E with newlines\" :TEST 123)"
+# Process files
+lq "(getf x :status)" data.sexpl
 
-(decode "(HELLO \"world\x1E with newlines\" :TEST 123)")
-;; => (HELLO "world
-;; with newlines" :TEST 123)
+# Multiple files
+lq "(when (> (getf x :age) 20) x)" users1.sexpl users2.sexpl
 
-;; Stream I/O
-(out '(my data))          ; Write to *standard-output*
-(in)                      ; Read from *standard-input*
+# Raw string output (no sexpline encoding)
+echo '(:message "Hello World")' | lq -r "(getf x :message)"
+# Output: Hello World (plain text)
+
+# Collect all inputs into list
+echo -e '(:count 10)\n(:count 20)' | lq -s "(apply #'+ (mapcar (lambda (item) (getf item :count)) x))"
+# Output: 30
 ```
 
-## API Reference
+## Command Line Usage
 
-### Core Functions
-
-#### `encode (sexp)`
-Encode an S-expression to single-line string format.
-
-```lisp
-(encode `(a ,(format nil "string~%with~%newlines") b))
-;; => "(A \"string\x1E with\x1E newlines\" B)"
+```
+lq [options] <filter> [file...]
 ```
 
-#### `decode (string)`
-Decode a single-line encoded string back to an S-expression.
+### Options
 
-```lisp
-(decode "(A \"string\x1E with\x1E newlines\" B)")
-;; => (A "string
-;; with
-;; newlines" B)
-```
+- `-f, --from-file` - Read filter from file instead of command line
+- `-l, --load` - Load Lisp file before processing (can be used multiple times)
+- `-e, --eval` - Evaluate expression before processing (can be used multiple times)
+- `-r, --raw-output` - Output raw strings instead of encoded S-expressions
+- `-s, --slurp` - Read all inputs into a single list and process together
+- `-n, --null-input` - Don't read input; use nil as the input value
+- `-c, --compact` - Produce compact output (planned)
+- `--version` - Show version information
+- `--help` - Show help message
 
-### Stream I/O Functions
+### Filters
 
-#### `out (sexp &optional stream)`
-Write an S-expression as an encoded line to a stream. Automatically handles newlines and SIGPIPE errors.
-
-```lisp
-(out '(hello world))                    ; Write to *standard-output*
-(out '(hello world) *error-output*)     ; Write to *error-output*
-```
-
-#### `in (&key stream on-error error-value eof-value)`
-Read and decode an S-expression from a stream with comprehensive error handling.
-
-**Parameters:**
-- `stream`: Input stream (default: `*standard-input*`)
-- `on-error`: Error handling mode (default: `nil`)
-  - `nil`: Return `error-value` on error (stop processing)
-  - `:skip`: Skip bad lines and try next line
-  - `:signal`: Re-signal the error
-- `error-value`: Value to return on error (default: `nil`)
-- `eof-value`: Value to return on EOF (default: `nil`)
-
-**Examples:**
-
-```lisp
-;; Basic usage
-(in)                                    ; Read one S-expression
-
-;; Error handling
-(in :on-error :skip)                    ; Skip invalid lines
-(in :eof-value :done)                   ; Custom EOF marker
-(in :error-value :invalid)              ; Custom error marker
-(in :on-error :skip :eof-value :done)   ; Skip errors, custom EOF
-```
-
-## Usage Examples
-
-### Processing a stream with error recovery
-
-```lisp
-;; Process all valid S-expressions, skipping invalid ones
-(loop for data = (sexpl:in :on-error :skip :eof-value :eof)
-      until (eq data :eof)
-      do (format t "Got: ~A~%" data))
-```
-
-### Distinguishing between EOF and errors
-
-```lisp
-(loop for result = (sexpl:in :eof-value :eof :error-value :error)
-      do (case result
-           (:eof (format t "End of file reached~%") (return))
-           (:error (format t "Invalid line encountered~%"))
-           (t (format t "Valid data: ~A~%" result))))
-```
-
-### Pipeline processing (like jq for JSON)
-
-```lisp
-;; Filter and transform S-expressions
-(loop for item = (sexpl:in :on-error :skip :eof-value :eof)
-      until (eq item :eof)
-      when (and (listp item) (eq (first item) :user))
-      do (sexpl:out (list :name (getf item :name))))
-```
-
-## Encoding Details
-
-Sexpline uses the ASCII Record Separator character (\\x1E, decimal 30) as an escape character:
-
-- Newlines (`#\Newline`) → `\x1E` + space
-- Existing `\x1E` characters → `\x1E` + `\x1E` (doubled)
-- All other characters remain unchanged
-
-This encoding ensures:
-- **Single-line output**: No newlines in encoded strings
-- **Reversibility**: Perfect round-trip encoding/decoding
-- **Readability**: Human-readable with visible escape sequences
-- **Safety**: No conflicts with common text processing tools
-
-## Error Handling
-
-Sexpline provides robust error handling for stream processing:
-
-1. **Parse Errors**: Invalid S-expression syntax
-2. **Stream Errors**: I/O problems, network issues
-3. **SIGPIPE**: Broken pipes in streaming scenarios
-4. **EOF**: End of input stream
-
-The `:skip` mode is particularly useful for processing large datasets where some lines might be corrupted or invalid.
-
-## Testing
-
-Run the test suite:
+Filters are Common Lisp expressions that operate on the input data (bound to variable `x`):
 
 ```bash
-make test
+# Access property
+lq "(getf x :name)"
+
+# Conditional filtering
+lq "(when (> (getf x :age) 18) x)"
+
+# Transform data
+lq "(list :name (getf x :name) :adult (>= (getf x :age) 18))"
+
+# Multiple values (outputs multiple lines)
+lq "(values (getf x :first-name) (getf x :last-name))"
 ```
 
-Or programmatically:
+## Examples
+
+### Basic Property Access
+```bash
+# Input: (:name "Alice" :age 30 :city "Tokyo")
+lq "(getf x :name)"     # Output: "Alice"
+lq "(getf x :age)"      # Output: 30
+```
+
+### Conditional Processing
+```bash
+# Filter adults only
+lq "(when (>= (getf x :age) 18) x)"
+
+# Transform with conditions
+lq "(if (> (getf x :score) 80) :pass :fail)"
+```
+
+### Working with Lists (-s/--slurp)
+```bash
+# Count total items
+lq -s "(length x)"
+
+# Find maximum age
+lq -s "(apply #'max (mapcar (lambda (item) (getf item :age)) x))"
+
+# Group by category
+lq -s "(group-by (lambda (item) (getf item :category)) x)"
+```
+
+### Raw Output (-r/--raw-output)
+```bash
+# Get plain text messages
+lq -r "(getf x :message)"
+
+# Format output
+lq -r "(format nil \"Name: ~A, Age: ~A\" (getf x :name) (getf x :age))"
+```
+
+### Processing Multiple Files
+```bash
+# Process user data from multiple files
+lq "(getf x :email)" users/*.sexpl
+
+# Combine data from multiple sources
+lq -s "(mapcar (lambda (item) (getf item :id)) x)" data1.sexpl data2.sexpl
+```
+
+## Sexpline Data Format
+
+The [sexpline format](FORMAT.md) allows S-expressions to be stored and transmitted as single-line strings, similar to JSONLines. This makes it suitable for:
+
+- Stream processing and pipelines
+- Log files and data exports  
+- Network protocols that expect line-based data
+- Integration with text processing tools
+
+### Encoding Rules
+
+- Newlines (`#\Newline`) are replaced with ASCII Record Separator (`\x1E`) + space
+- Existing `\x1E` characters are escaped as `\x1E\x1E` 
+- All other characters remain unchanged
+- Perfect round-trip: decode(encode(data)) = data
+
+### Examples
 
 ```lisp
-(asdf:test-system :sexpline)
+;; Original S-expression with newlines
+(message "Hello
+World" status :ok)
+
+;; Encoded as single line
+"(MESSAGE \"Hello\x1E World\" STATUS :OK)"
+
+;; When decoded, newlines are restored perfectly
 ```
 
-## Comparison with JSONLines
+## Programming Interface
 
-| Feature | JSONLines | Sexpline |
-|---------|-----------|----------|
-| Data format | JSON objects | S-expressions |
-| Line-based | ✓ | ✓ |
+For programmatic use, the sexpline library provides a simple API:
+
+```lisp
+(ql:quickload :sexpline)
+(use-package :sexpline)
+
+;; Encoding/Decoding
+(encode '(hello world))           ; => "(HELLO WORLD)"
+(decode "(HELLO WORLD)")          ; => (HELLO WORLD)
+
+;; Stream I/O with error handling
+(out '(data here))                ; Write to stdout
+(in)                              ; Read from stdin
+(in :on-error :skip)              ; Skip invalid lines
+(in :eof-value :done)             ; Custom EOF handling
+```
+
+### Stream Processing
+
+```lisp
+;; Process all valid S-expressions from stdin
+(loop for data = (in :on-error :skip :eof-value :eof)
+      until (eq data :eof)
+      do (process-data data))
+
+;; Write results to stdout with SIGPIPE protection
+(dolist (result results)
+  (out result))
+```
+
+### Error Handling
+
+The library provides comprehensive error handling for stream processing:
+
+- **Parse errors**: Invalid S-expression syntax
+- **Stream errors**: I/O problems, network issues  
+- **SIGPIPE**: Broken pipes in streaming scenarios
+- **EOF**: End of input detection
+
+Options for `in` function:
+- `:on-error nil` - Return error-value and stop (default)
+- `:on-error :skip` - Skip invalid lines, continue processing
+- `:on-error :signal` - Re-signal the error for custom handling
+- `:error-value` - Custom value to return on errors
+- `:eof-value` - Custom value to return on EOF
+
+## Comparison with jq
+
+| Feature | jq | lq |
+|---------|----|----|
+| Data format | JSON | S-expressions |  
+| Filter language | jq syntax | Common Lisp |
 | Streaming | ✓ | ✓ |
+| Multiple files | ✓ | ✓ |
 | Error recovery | Manual | Built-in |
-| Comments | ✗ | ✓ (in S-expressions) |
-| Nested structures | ✓ | ✓ |
-| Type system | Limited | Full Lisp |
+| Raw output | ✓ | ✓ |
+| Slurp mode | ✓ | ✓ |
+| Null input | ✓ | ✓ |
+| Comments in data | ✗ | ✓ |
+| Complex data types | Limited | Full Lisp |
+| Programmability | Limited | Full programming language |
+
+## Requirements
+
+- [Roswell](https://github.com/roswell/roswell) - Common Lisp installation manager
+- Compatible Lisp implementation (SBCL, CCL, ECL tested)
 
 ## License
 
