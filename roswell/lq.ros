@@ -87,9 +87,9 @@ exec ros -Q -- $0 "$@"
     (when results
       (if (member :raw-output options)
           (loop for result in results
-                do (format t "~A~%" result))
+                do (when result (format t "~A~%" result)))
           (loop for result in results
-                do (sexpl:out result))))))
+                do (when result (sexpl:out result)))))))
 
 (defun main (&rest args)
   (multiple-value-bind (options filter files evals) (parse-args args)
